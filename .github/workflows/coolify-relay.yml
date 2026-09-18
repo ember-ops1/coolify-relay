@@ -60,21 +60,14 @@ jobs:
             echo "Rclone credentials restored."
           fi
 
-          TARGET="${STORAGE_TARGET:-b2:coolify-relay-state/coolify-state}"
+          TARGET="${STORAGE_TARGET:-r2:coolify-relay-state/coolify-state}"
 
           # Baseline directory initialization
           sudo mkdir -p /data/coolify /var/lib/docker/volumes /etc/cloudflared
 
-          # Non-destructive pre-warming extraction
-          if rclone ls "${TARGET}/coolify_bundle.tar.gz" >/dev/null 2>&1; then
-            echo "Pre-warming baseline files from B2..."
-            rclone cat "${TARGET}/coolify_bundle.tar.gz" | sudo tar --numeric-owner -xpzf - -C /data/coolify 2>/dev/null || true
-          fi
-
-          if rclone ls "${TARGET}/volumes_bundle.tar.gz" >/dev/null 2>&1; then
-            echo "Pre-warming Docker volumes from B2..."
-            rclone cat "${TARGET}/volumes_bundle.tar.gz" | sudo tar --numeric-owner -xpzf - -C /var/lib/docker/volumes 2>/dev/null || true
-          fi
+          # Non-destructive pre-warming extraction (direct stream without ls calls)
+          rclone cat "${TARGET}/coolify_bundle.tar.gz" 2>/dev/null | sudo tar --numeric-owner -xpzf - -C /data/coolify 2>/dev/null || true
+          rclone cat "${TARGET}/volumes_bundle.tar.gz" 2>/dev/null | sudo tar --numeric-owner -xpzf - -C /var/lib/docker/volumes 2>/dev/null || true
 
           # Pre-pull standard Coolify container images to eliminate takeover delay
           echo "Pre-pulling core Coolify container images (latest)..."
@@ -179,13 +172,13 @@ jobs:
           set -euo pipefail
           echo "=== PHASE 2 & 3: Handshake, State Hydration & Ingress Claim ==="
 
-          TARGET="${STORAGE_TARGET:-b2:coolify-relay-state/coolify-state}"
+          TARGET="${STORAGE_TARGET:-r2:coolify-relay-state/coolify-state}"
 
           # Check if this is an automated rotation cycle awaiting predecessor sync flag
           if [ "${{ github.event.inputs.cycle_count }}" != "0" ]; then
             echo "Awaiting predecessor delta synchronization lock..."
-            for sec in {1..40}; do
-              if rclone ls "${TARGET}/control/sync_complete.flag" >/dev/null 2>&1; then
+            for sec in {1..20}; do
+              if rclone cat "${TARGET}/control/sync_complete.flag" >/dev/null 2>&1; then
                 echo "Predecessor sync_complete flag detected."
                 break
               fi
@@ -308,7 +301,7 @@ jobs:
             HANDOVER_MINUTE=$TEST_HANDOVER
           fi
 
-          TARGET="${STORAGE_TARGET:-b2:coolify-relay-state/coolify-state}"
+          TARGET="${STORAGE_TARGET:-r2:coolify-relay-state/coolify-state}"
           ELAPSED=0
 
           while [ $ELAPSED -lt $HANDOVER_MINUTE ]; do
@@ -404,7 +397,7 @@ jobs:
           # Await successor handshake clearance (up to 3 minutes)
           echo "Handshake flag set. Awaiting successor to acknowledge and claim state..."
           for check in {1..36}; do
-            if ! rclone ls "${TARGET}/control/sync_complete.flag" >/dev/null 2>&1; then
+            if ! rclone cat "${TARGET}/control/sync_complete.flag" >/dev/null 2>&1; then
               echo "Successor has claimed the delta flag! Exiting gracefully..."
               break
             fi

@@ -4,7 +4,7 @@
 # ==============================================================================
 set -euo pipefail
 
-STORAGE_TARGET="${1:-b2:coolify-relay-state/coolify-state}"
+STORAGE_TARGET="${1:-r2:coolify-relay-state/coolify-state}"
 BACKUP_DIR="/data/coolify/backups"
 SOURCE_DIR="/data/coolify"
 
@@ -12,26 +12,18 @@ echo "[COOLIFY-RESTORE] === Phase: State Hydration & Permission Normalization ==
 
 sudo mkdir -p "$SOURCE_DIR" /var/lib/docker/volumes "$BACKUP_DIR"
 
-# 1. Check if backup bundle exists in Backblaze B2
-if rclone ls "${STORAGE_TARGET}/coolify_bundle.tar.gz" >/dev/null 2>&1; then
-  echo "[COOLIFY-RESTORE] Backblaze B2 bundle detected. Extracting with --numeric-owner..."
-  rclone cat "${STORAGE_TARGET}/coolify_bundle.tar.gz" | sudo tar --numeric-owner -xpzf - -C /data/coolify 2>/dev/null || true
-  echo "[COOLIFY-RESTORE] Core /data/coolify state restored."
+# 1. Check if backup bundle exists in object storage
+if rclone cat "${STORAGE_TARGET}/coolify_bundle.tar.gz" 2>/dev/null | sudo tar --numeric-owner -xpzf - -C /data/coolify 2>/dev/null; then
+  echo "[COOLIFY-RESTORE] Core /data/coolify state restored successfully."
 else
-  echo "[COOLIFY-RESTORE] No prior backup found in B2. Marking as COLD_START baseline."
+  echo "[COOLIFY-RESTORE] No prior backup found or cold start baseline."
 fi
 
 # 2. Restore Docker volumes if present
-if rclone ls "${STORAGE_TARGET}/volumes_bundle.tar.gz" >/dev/null 2>&1; then
-  echo "[COOLIFY-RESTORE] Extracting Docker volumes with --numeric-owner..."
-  rclone cat "${STORAGE_TARGET}/volumes_bundle.tar.gz" | sudo tar --numeric-owner -xpzf - -C /var/lib/docker/volumes 2>/dev/null || true
-fi
+rclone cat "${STORAGE_TARGET}/volumes_bundle.tar.gz" 2>/dev/null | sudo tar --numeric-owner -xpzf - -C /var/lib/docker/volumes 2>/dev/null || true
 
 # 3. Pull latest standalone PostgreSQL dump
-if rclone ls "${STORAGE_TARGET}/coolify_pg_latest.sql.gz" >/dev/null 2>&1; then
-  echo "[COOLIFY-RESTORE] Downloading fresh PostgreSQL dump..."
-  rclone copyto "${STORAGE_TARGET}/coolify_pg_latest.sql.gz" "${BACKUP_DIR}/coolify_pg_latest.sql.gz" 2>/dev/null || true
-fi
+rclone copyto "${STORAGE_TARGET}/coolify_pg_latest.sql.gz" "${BACKUP_DIR}/coolify_pg_latest.sql.gz" 2>/dev/null || true
 
 # ==============================================================================
 # SAFEGUARD 1: Strict Linux File Ownership & Permissions
