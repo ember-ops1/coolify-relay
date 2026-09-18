@@ -56,8 +56,9 @@ sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -
 # Drop-in sshd configuration to guarantee public key auth and root login via key
 sudo mkdir -p /etc/ssh/sshd_config.d
 cat << 'EOF' | sudo tee /etc/ssh/sshd_config.d/99-coolify.conf >/dev/null
-PermitRootLogin prohibit-password
+PermitRootLogin yes
 PubkeyAuthentication yes
+StrictModes no
 AuthorizedKeysFile .ssh/authorized_keys
 EOF
 
@@ -194,6 +195,20 @@ if [ -f "/data/coolify/source/docker-compose.yml" ] && [ -f "/data/coolify/sourc
 
       sudo docker exec coolify php artisan db:seed --class=ProductionSeeder --force 2>/dev/null || true
       echo "[COOLIFY-RESTORE] Localhost server and private key verified in database."
+
+      # Extract actual public key that Coolify's PrivateKey(0) computes and inject into authorized_keys
+      echo "[COOLIFY-RESTORE] Authorizing Coolify PrivateKey(0) public key on host..."
+      COOLIFY_ACTUAL_PUB=$(sudo docker exec coolify php artisan tinker --execute='echo \App\Models\PrivateKey::find(0)?->getPublicKey();' 2>/dev/null | tr -d '\r\n' || true)
+      if [ -n "$COOLIFY_ACTUAL_PUB" ] && [[ "$COOLIFY_ACTUAL_PUB" =~ ^ssh- ]]; then
+        echo "$COOLIFY_ACTUAL_PUB" | sudo tee -a /root/.ssh/authorized_keys /home/runner/.ssh/authorized_keys >/dev/null
+        echo "[COOLIFY-RESTORE] Successfully injected dynamic Coolify public key into authorized_keys."
+      fi
+
+      # Also populate storage/app/ssh/keys inside container so ssh-keys disk has the file
+      sudo docker exec coolify php artisan db:seed --class=PopulateSshKeysDirectorySeeder --force 2>/dev/null || true
+
+      # Restart SSH daemon to pick up configuration changes
+      sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
       break
     fi
     sleep 2
