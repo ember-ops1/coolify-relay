@@ -206,7 +206,8 @@ jobs:
             sudo mkdir -p /etc/cloudflared
 
             # Safely generate /etc/cloudflared/credentials.json from CLOUDFLARE_TUNNEL_TOKEN
-            python3 -c "import os, base64, json; token = os.environ.get('CLOUDFLARE_TUNNEL_TOKEN', '').strip(); raw = json.loads(base64.b64decode(token)) if token else {}; creds = {'AccountTag': raw.get('a', ''), 'TunnelID': raw.get('t', ''), 'TunnelSecret': raw.get('s', '')}; open('/etc/cloudflared/credentials.json', 'w').write(json.dumps(creds)) if creds.get('TunnelID') else None"
+            python3 -c "import os, base64, json; token = os.environ.get('CLOUDFLARE_TUNNEL_TOKEN', '').strip(); raw = json.loads(base64.b64decode(token)) if token else {}; creds = {'AccountTag': raw.get('a', ''), 'TunnelID': raw.get('t', ''), 'TunnelSecret': raw.get('s', '')}; open('/tmp/credentials.json', 'w').write(json.dumps(creds)) if creds.get('TunnelID') else None"
+            sudo mv -f /tmp/credentials.json /etc/cloudflared/credentials.json
             sudo chmod 600 /etc/cloudflared/credentials.json
 
             # Copy verified repository wildcard ingress configuration

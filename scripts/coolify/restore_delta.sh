@@ -65,6 +65,24 @@ EOF
 sudo systemctl enable ssh 2>/dev/null || sudo systemctl enable sshd 2>/dev/null || true
 sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null || true
 
+# Guarantee that a valid root host key for @host.docker.internal exists in /data/coolify/ssh/keys
+sudo mkdir -p /data/coolify/ssh/keys
+EXISTING_KEY=$(find /data/coolify/ssh/keys -maxdepth 1 -type f \( -name "ssh_key@*" -o -name "id_*" \) ! -name "*.pub" ! -name "*.lock" 2>/dev/null | head -n 1 || true)
+if [ -n "$EXISTING_KEY" ] && [ ! -f "/data/coolify/ssh/keys/id.root@host.docker.internal" ]; then
+  sudo cp -f "$EXISTING_KEY" /data/coolify/ssh/keys/id.root@host.docker.internal
+  sudo ssh-keygen -y -f /data/coolify/ssh/keys/id.root@host.docker.internal > /tmp/id.root@host.docker.internal.pub 2>/dev/null || true
+  [ -f /tmp/id.root@host.docker.internal.pub ] && sudo mv -f /tmp/id.root@host.docker.internal.pub /data/coolify/ssh/keys/id.root@host.docker.internal.pub || true
+elif [ ! -f "/data/coolify/ssh/keys/id.root@host.docker.internal" ]; then
+  echo "[COOLIFY-RESTORE] Generating host.docker.internal SSH key pair..."
+  sudo ssh-keygen -t ed25519 -N "" -f /data/coolify/ssh/keys/id.root@host.docker.internal -C "root@host.docker.internal" 2>/dev/null || true
+fi
+
+# Ensure correct permissions on SSH key files
+sudo chmod 700 /data/coolify/ssh /data/coolify/ssh/keys
+sudo chmod 600 /data/coolify/ssh/keys/* 2>/dev/null || true
+sudo chmod 644 /data/coolify/ssh/keys/*.pub 2>/dev/null || true
+sudo chown -R 9999:root /data/coolify/ssh 2>/dev/null || true
+
 # Authorize Coolify's internal SSH key for root and runner users
 sudo mkdir -p /root/.ssh /home/runner/.ssh
 
@@ -72,19 +90,12 @@ sudo mkdir -p /root/.ssh /home/runner/.ssh
 echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINGMEL5LpxfXWB1Q2gd028oYZzpuGe97jlmgbYza+pN" | sudo tee -a /root/.ssh/authorized_keys >/dev/null
 echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIINGMEL5LpxfXWB1Q2gd028oYZzpuGe97jlmgbYza+pN" | sudo tee -a /home/runner/.ssh/authorized_keys >/dev/null
 
-if [ -f "/data/coolify/ssh/keys/id_ed25519.pub" ]; then
-  COOLIFY_PUB=$(sudo cat /data/coolify/ssh/keys/id_ed25519.pub)
-  echo "$COOLIFY_PUB" | sudo tee -a /root/.ssh/authorized_keys >/dev/null
-  echo "$COOLIFY_PUB" | sudo tee -a /home/runner/.ssh/authorized_keys >/dev/null
-  echo "[COOLIFY-RESTORE] Injected Coolify id_ed25519.pub into /root/.ssh/authorized_keys."
-elif [ -f "/data/coolify/ssh/keys/id_rsa.pub" ]; then
-  COOLIFY_PUB=$(sudo cat /data/coolify/ssh/keys/id_rsa.pub)
-  echo "$COOLIFY_PUB" | sudo tee -a /root/.ssh/authorized_keys >/dev/null
-  echo "$COOLIFY_PUB" | sudo tee -a /home/runner/.ssh/authorized_keys >/dev/null
-  echo "[COOLIFY-RESTORE] Injected Coolify id_rsa.pub into /root/.ssh/authorized_keys."
-fi
-
-# Ensure any public keys inside /data/coolify/ssh/keys are also in authorized_keys
+# Inject all public keys from /data/coolify/ssh/keys into authorized_keys
+for priv in /data/coolify/ssh/keys/*; do
+  if [ -f "$priv" ] && [[ ! "$priv" =~ \.pub$ ]] && [[ ! "$priv" =~ \.lock$ ]]; then
+    sudo ssh-keygen -y -f "$priv" 2>/dev/null | sudo tee -a /root/.ssh/authorized_keys /home/runner/.ssh/authorized_keys >/dev/null || true
+  fi
+done
 for pub in /data/coolify/ssh/keys/*.pub; do
   [ -f "$pub" ] && sudo cat "$pub" | sudo tee -a /root/.ssh/authorized_keys /home/runner/.ssh/authorized_keys >/dev/null || true
 done
@@ -100,6 +111,9 @@ if [ -f "/data/coolify/source/docker-compose.yml" ] && [ -f "/data/coolify/sourc
   if [ -f "/data/coolify/source/.env" ]; then
     sudo sed -i 's|^APP_URL=.*|APP_URL=https://coolify.justsawyou.cyou|g' /data/coolify/source/.env 2>/dev/null || true
   fi
+
+  echo "[COOLIFY-RESTORE] Ensuring external Docker network coolify exists..."
+  sudo docker network create --attachable coolify 2>/dev/null || true
 
   echo "[COOLIFY-RESTORE] Booting coolify-db container..."
   sudo docker compose --project-directory /data/coolify/source \
@@ -143,6 +157,47 @@ if [ -f "/data/coolify/source/docker-compose.yml" ] && [ -f "/data/coolify/sourc
     echo "[COOLIFY-RESTORE] Booting Coolify Traefik proxy on port 80/443..."
     sudo docker compose --project-directory /data/coolify/proxy -f /data/coolify/proxy/docker-compose.yml up -d 2>/dev/null || true
   fi
+
+  # Wait for Coolify container readiness and run database migrations/seeders
+  echo "[COOLIFY-RESTORE] Ensuring database schema and host keys are initialized in Coolify..."
+  for s in {1..30}; do
+    if sudo docker exec coolify php artisan --version >/dev/null 2>&1; then
+      echo "[COOLIFY-RESTORE] Running database migrations..."
+      sudo docker exec coolify php artisan migrate --force 2>/dev/null || true
+
+      echo "[COOLIFY-RESTORE] Binding localhost Server(0) and PrivateKey(0) in Coolify database..."
+      sudo docker exec coolify php artisan tinker --execute='
+        try {
+          $priv = @file_get_contents("/data/coolify/ssh/keys/id.root@host.docker.internal") ?: @file_get_contents("/var/www/html/storage/app/ssh/keys/id.root@host.docker.internal");
+          if ($priv) {
+            $pk = \App\Models\PrivateKey::find(0);
+            if (!$pk) {
+              $pk = new \App\Models\PrivateKey();
+              $pk->id = 0;
+              $pk->team_id = 0;
+              $pk->name = "localhost key";
+              $pk->description = "Host key for localhost";
+              $pk->private_key = $priv;
+              $pk->save();
+            } else if (empty($pk->private_key)) {
+              $pk->private_key = $priv;
+              $pk->save();
+            }
+            $srv = \App\Models\Server::find(0);
+            if ($srv) {
+              $srv->private_key_id = 0;
+              $srv->save();
+            }
+          }
+        } catch (\Throwable $e) {}
+      ' 2>/dev/null || true
+
+      sudo docker exec coolify php artisan db:seed --class=ProductionSeeder --force 2>/dev/null || true
+      echo "[COOLIFY-RESTORE] Localhost server and private key verified in database."
+      break
+    fi
+    sleep 2
+  done
 
   # Verify container state
   echo "[COOLIFY-RESTORE] Active Docker containers:"
