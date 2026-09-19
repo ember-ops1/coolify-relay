@@ -71,11 +71,12 @@ jobs:
 
           # Pre-pull standard Coolify container images to eliminate takeover delay
           echo "Pre-pulling core Coolify container images (latest)..."
+          sudo docker network create --attachable coolify 2>/dev/null || true
           sudo docker pull ghcr.io/coollabsio/coolify:latest || true
           sudo docker pull ghcr.io/coollabsio/coolify-helper:latest || true
           sudo docker pull traefik:v3.1 || sudo docker pull traefik:v3.0 || true
-          sudo docker pull postgres:16-alpine || true
-          sudo docker pull redis:alpine || true
+          sudo docker pull postgres:15-alpine || sudo docker pull postgres:16-alpine || true
+          sudo docker pull redis:7-alpine || sudo docker pull redis:alpine || true
 
           # If this is a completely fresh first run without existing state, install Coolify baseline
           if [ ! -f "/data/coolify/source/docker-compose.yml" ]; then
@@ -324,10 +325,14 @@ jobs:
             fi
 
             # Periodic Traefik & Coolify Health Check
-            if [ $((ELAPSED % 5)) -eq 0 ]; then
+            if [ $((ELAPSED % 2)) -eq 0 ]; then
               if ! curl -fsS --connect-timeout 2 http://localhost:8000 >/dev/null 2>&1; then
-                echo "[$(date +'%T')] Warning: Local Coolify dashboard unreachable at minute ${ELAPSED}. Restarting Coolify web container..."
-                (cd /data/coolify/source && sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml restart coolify) || true
+                echo "[$(date +'%T')] Warning: Local Coolify dashboard unreachable at minute ${ELAPSED}. Booting/recovering container stack..."
+                (cd /data/coolify/source && sudo docker network create --attachable coolify 2>/dev/null || true)
+                (cd /data/coolify/source && sudo docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml up -d 2>&1 || true)
+                if [ -d "/data/coolify/proxy" ] && [ -f "/data/coolify/proxy/docker-compose.yml" ]; then
+                  (cd /data/coolify/proxy && sudo docker compose -f docker-compose.yml up -d 2>/dev/null || true)
+                fi
               fi
             fi
 
