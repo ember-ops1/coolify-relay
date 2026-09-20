@@ -150,11 +150,13 @@ jobs:
           sleep 20
           GH_TOKEN="$NEXT_PAT" gh workflow run coolify-relay.yml \
             --repo "$PRIMARY_TARGET" \
+            --ref main \
             -f cycle_count="$CYCLE_COUNT" \
             -f retry_depth="$NEW_DEPTH" \
             -f test_handover="${TEST_HANDOVER:-0}" || \
           GH_TOKEN="$FALLBACK_PAT" gh workflow run coolify-relay.yml \
             --repo "$FALLBACK_TARGET" \
+            --ref main \
             -f cycle_count="$CYCLE_COUNT" \
             -f retry_depth="$NEW_DEPTH" \
             -f test_handover="${TEST_HANDOVER:-0}" || true
@@ -214,7 +216,7 @@ jobs:
             sudo chmod 600 /etc/cloudflared/config.yml
 
             echo "Validating cloudflared ingress configuration..."
-            sudo cloudflared tunnel ingress validate --config /etc/cloudflared/config.yml || true
+            sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate || true
 
             echo "Launching local-config cloudflared daemon..."
             sudo cloudflared tunnel --config /etc/cloudflared/config.yml run > /tmp/cloudflared.log 2>&1 &
@@ -397,6 +399,7 @@ jobs:
               echo "Dispatch attempt $attempt to ${target}..."
               if GH_TOKEN="$token" gh workflow run coolify-relay.yml \
                 --repo "$target" \
+                --ref main \
                 -f cycle_count="$NEXT_CYCLE" \
                 -f retry_depth="0" \
                 -f test_handover="${TEST_HANDOVER:-0}"; then
